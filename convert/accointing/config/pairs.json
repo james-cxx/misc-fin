@@ -1,0 +1,5 @@
+{
+    "USDCUSD": ["USDC","USD"],
+    "BTCUSD": ["BTC", "USD"],
+    "ETHUSD": ["ETH", "USD"]
+}

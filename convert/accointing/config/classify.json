@@ -1,0 +1,23 @@
+{
+    "us": {
+        "TxSource.BLOCKFI": {
+            "Transaction Type": {
+                "BIA Deposit": "ignored",
+                "BIA Withdraw": "ignored",
+                "Interest Payment": "staking",
+                "Referral Bonus": "bounty"
+            }
+        },
+        "TxSource.CELSIUS": {
+            "Transaction type": {
+                "Reward": "staking",
+                "Referred Award": "bounty"
+            }
+        },
+        "TxSource.TRADESTATION": {
+            "Type": {
+                "Interest": "staking"
+            }
+        }
+    }
+}
