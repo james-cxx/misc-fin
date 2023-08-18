@@ -3,7 +3,8 @@
         "TxSource.BINANCE_US": {
             "Operation": {
                 "USD Deposit": "add funds",
-                "USD Withdrawal": "remove funds"
+                "USD Withdrawal": "remove funds",
+                "Staking Rewards": "staking"
             }
         },
 
