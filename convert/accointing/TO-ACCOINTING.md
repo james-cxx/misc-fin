@@ -94,6 +94,7 @@ is only needed for converting TradeStation CSV files.  See the [TradeStation](Tr
 This script currently supports the sources listed below.  See the respective documentation files for important
 information:
 
+* [Binance.US](BinanceUS.md)
 * [BlockFi](BlockFi.md)
 * [Celsius](Celsius.md)
 * [TradeStation](TradeStation.md)

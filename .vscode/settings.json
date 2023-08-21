@@ -1,5 +1,19 @@
 {
     "cSpell.words": [
-        "Accointing"
+        "Accointing",
+        "blockfi",
+        "datetimeparser",
+        "failonerror",
+        "fromcsv",
+        "NONTRADE",
+        "petl",
+        "pytz",
+        "rowmap",
+        "rowmapper",
+        "setheader",
+        "Solana",
+        "tocsv",
+        "TRADESTATION",
+        "xform"
     ]
 }

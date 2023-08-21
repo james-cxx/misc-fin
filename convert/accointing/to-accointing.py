@@ -22,8 +22,11 @@ import petl as etl                    # PETL: https://petl.readthedocs.io/en/sta
 #   the `classify.json` and `pairs.json` files are externalized.
 
 
-TxSource = Enum('TxSource', ['UNKNOWN', 'BLOCKFI', 'CELSIUS', 'TRADESTATION'])
+TxSource = Enum('TxSource', ['UNKNOWN', 'BINANCE_US', 'BLOCKFI', 'CELSIUS', 'TRADESTATION'])
 TxType = Enum('TxType', ['COMMON', 'NONTRADE', 'TRADE'])
+
+BINANCE_US_HEADER = ('User_Id','Time','Category','Operation','Order_Id','Transaction_Id','Primary_Asset','Realized_Amount_For_Primary_Asset','Realized_Amount_For_Primary_Asset_In_USD_Value','Base_Asset','Realized_Amount_For_Base_Asset','Realized_Amount_For_Base_Asset_In_USD_Value','Quote_Asset','Realized_Amount_For_Quote_Asset','Realized_Amount_For_Quote_Asset_In_USD_Value','Fee_Asset','Realized_Amount_For_Fee_Asset','Realized_Amount_For_Fee_Asset_In_USD_Value','Payment_Method','Withdrawal_Method','Additional_Note')
+BINANCE_US_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 BLOCKFI_HEADER = ('Cryptocurrency','Amount','Transaction Type','Confirmed At')
 BLOCKFI_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -37,6 +40,7 @@ TS_NONTRADE_DEFAULT_TIME_STR = "11:00:00 AM"
 TS_DATETIME_FORMAT = "%m/%d/%Y %I:%M:%S %p"
 
 IDENTIFY_MAP = {
+    BINANCE_US_HEADER: (TxSource.BINANCE_US, TxType.COMMON),
     BLOCKFI_HEADER: (TxSource.BLOCKFI, TxType.COMMON),
     CELSIUS_HEADER: (TxSource.CELSIUS, TxType.COMMON),
     TS_NONTRADE_HEADER: (TxSource.TRADESTATION, TxType.NONTRADE),
@@ -56,6 +60,7 @@ CLASSIFY_MAP = {}
 PAIR_MAP = {}
 INPUT_TZ = None   # `None` implies pass-through (no conversion).
 
+UNIQUE_ORDERS = set()
 
 #
 # -------- CONFIG FUNCTIONS --------
@@ -106,6 +111,101 @@ def classify_tx(txSource, txField, tx):
         raise Exception("Field '{}' not found in field map for source '{}'.".format(txField, str(txSource)))
     
     return valueMap.get(tx[txField], None)
+
+
+# ---- Binance.us ----
+
+binance_us_dt_parser = etl.util.parsers.datetimeparser(BINANCE_US_DATETIME_FORMAT)
+
+def binance_us_dt_xform(dateTimeStr) -> str:
+
+    if (INPUT_TZ == None):
+        return binance_us_dt_parser(dateTimeStr).strftime(ACCOINTING_DATETIME_FORMAT) 
+
+    loc_dt = binance_us_dt_parser(dateTimeStr)
+    INPUT_TZ.localize(loc_dt, is_dst=True)
+    utc_dt = loc_dt.astimezone(pytz.utc)
+    return utc_dt.strftime(ACCOINTING_DATETIME_FORMAT)
+
+
+def binance_us_row_mapper(tx):
+
+    typeMap = {
+        'Deposit':"deposit",
+        'Distribution':"deposit",
+        'Withdrawal':"withdraw",
+        'Buy':"order", 
+        'Convert':"order", 
+        'Sell':"order", 
+        'Spot Trading':"order"
+    }
+
+    txIsDeposit =  typeMap[tx['Category']] == "deposit"
+    txIsWithdrawal = typeMap[tx['Category']] == "withdraw"
+    txIsOrder = typeMap[tx['Category']] == "order"
+
+    transactionType = typeMap.get(tx['Category'], "???")
+    txDate = binance_us_dt_xform(tx['Time'])
+
+    if txIsDeposit:
+        inBuyAmount = tx['Realized_Amount_For_Primary_Asset']
+        inBuyAsset = tx['Primary_Asset']
+        outSellAmount = None
+        outSellAsset = None
+
+    if txIsWithdrawal:
+        inBuyAmount = None
+        inBuyAsset = None
+        outSellAmount = tx['Realized_Amount_For_Primary_Asset']
+        outSellAsset = tx['Primary_Asset']
+
+    if txIsOrder:
+
+        if (tx['Category'] == 'Buy' and tx['Operation'] == 'Buy'):   # Double-checked
+            inBuyAmount = tx['Realized_Amount_For_Quote_Asset']
+            inBuyAsset = tx['Quote_Asset']
+            outSellAmount = tx['Realized_Amount_For_Base_Asset']
+            outSellAsset = tx['Base_Asset']
+
+        if (tx['Category'] == 'Sell' and tx['Operation'] == 'Sell'):  # Double-checked
+            inBuyAmount = tx['Realized_Amount_For_Quote_Asset']
+            inBuyAsset = tx['Quote_Asset']
+            outSellAmount = tx['Realized_Amount_For_Base_Asset']
+            outSellAsset = tx['Base_Asset']
+
+        if (tx['Category'] == 'Spot Trading' and tx['Operation'] == 'Buy'):  # Double-checked
+            inBuyAmount = tx['Realized_Amount_For_Base_Asset']
+            inBuyAsset = tx['Base_Asset']
+            outSellAmount = tx['Realized_Amount_For_Quote_Asset']
+            outSellAsset = tx['Quote_Asset']
+        
+        if (tx['Category'] == 'Spot Trading' and tx['Operation'] == 'Sell'):  # Double-checked
+            inBuyAmount = tx['Realized_Amount_For_Quote_Asset']
+            inBuyAsset = tx['Quote_Asset']
+            outSellAmount = tx['Realized_Amount_For_Base_Asset']
+            outSellAsset = tx['Base_Asset']
+
+        if (tx['Category'] == 'Convert' and tx['Operation'] == 'Convert'):  #
+            inBuyAmount = tx['Realized_Amount_For_Quote_Asset']
+            inBuyAsset = tx['Quote_Asset']
+            outSellAmount = tx['Realized_Amount_For_Base_Asset']
+            outSellAsset = tx['Base_Asset']
+
+    feeAmount = tx['Realized_Amount_For_Fee_Asset']
+    feeAsset = tx['Fee_Asset']
+    classification = classify_tx(TxSource.BINANCE_US, 'Operation', tx)
+    operationId = tx['Order_Id']
+    if (tx['Additional_Note']):
+        comments = "Transaction_Id: {}; {}".format(tx['Transaction_Id'], tx['Additional_Note'])
+    else:
+        comments = "Transaction_Id: {}".format(tx['Transaction_Id'])
+
+    # Since The Binance.US CSV stores multiple fills for a single order, a set will be used to determine the
+    # number of unique orders.
+    global UNIQUE_ORDERS
+    UNIQUE_ORDERS.add(tx['Order_Id'])
+
+    return [transactionType, txDate, inBuyAmount, inBuyAsset, outSellAmount, outSellAsset, feeAmount, feeAsset, classification, operationId, comments]
 
 
 # ---- BlockFi ----
@@ -253,9 +353,10 @@ def ts_trade_rowmapper(tx):
     return [transactionType, txDate, inBuyAmount, inBuyAsset, outSellAmount, outSellAsset, feeAmount, feeAsset, classification, operationId, comments]
 
 
-# ---- Rowmapper Mapping ----
+# ---- Rowmapper Map ----
 
-ROWMAPPER_MAPPING = {
+ROWMAPPER_MAP = {
+    (TxSource.BINANCE_US, TxType.COMMON): binance_us_row_mapper,
     (TxSource.BLOCKFI, TxType.COMMON): blockfi_row_mapper,
     (TxSource.CELSIUS, TxType.COMMON): celsius_row_mapper,
     (TxSource.TRADESTATION, TxType.NONTRADE): ts_nontrade_rowmapper,
@@ -291,10 +392,10 @@ def get_file_context(filename):
         fileContextDict['message'] = "Unrecognized header in file: '{}'".format(filename)
         return fileContextDict
 
-    fileContextDict['rowmapper'] = ROWMAPPER_MAPPING.get(idTuple, None)
+    fileContextDict['rowmapper'] = ROWMAPPER_MAP.get(idTuple, None)
 
     if (not fileContextDict['rowmapper']):
-        raise Exception("Missing ROWMAPPER_MAPPING mapping for idTuple ({},{}).".format(TxSource, TxType))
+        raise Exception("Missing ROWMAPPER_MAP entry for idTuple ({},{}).".format(TxSource, TxType))
 
     fileContextDict['success'] = True
     fileContextDict['message'] = None
@@ -378,6 +479,11 @@ def main() -> int:
 
     # Write the csv to the specified output, or to stdout if no output was specified.
     etl.io.csv.tocsv(resultTable, args.output if args.output else etl.io.sources.StdoutSource(), quoting=QUOTE_NONNUMERIC)
+
+    # Special case output for Binance.US: Show the number of unique orders.
+    if (list(sourceSet)[0] == TxSource.BINANCE_US):
+        global UNIQUE_ORDERS
+        sys.stderr.write("Unique order count: {}\n".format(len(UNIQUE_ORDERS)))
 
     return 0
 
