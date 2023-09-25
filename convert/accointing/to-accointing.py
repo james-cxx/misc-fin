@@ -13,7 +13,7 @@ from enum import Enum
 from pytz import timezone             # pytz: https://pythonhosted.org/pytz/#tzinfo-api
 import pytz
 import petl as etl                    # PETL: https://petl.readthedocs.io/en/stable/index.html
-
+import re
 
 #
 # -------- DEFINITIONS --------
@@ -22,7 +22,7 @@ import petl as etl                    # PETL: https://petl.readthedocs.io/en/sta
 #   the `classify.json` and `pairs.json` files are externalized.
 
 
-TxSource = Enum('TxSource', ['UNKNOWN', 'BINANCE_US', 'BLOCKFI', 'CELSIUS', 'TRADESTATION'])
+TxSource = Enum('TxSource', ['UNKNOWN', 'BINANCE_US', 'BLOCKFI', 'CELSIUS', 'COINBASE', 'TRADESTATION'])
 TxType = Enum('TxType', ['COMMON', 'NONTRADE', 'TRADE'])
 
 BINANCE_US_HEADER = ('User_Id','Time','Category','Operation','Order_Id','Transaction_Id','Primary_Asset','Realized_Amount_For_Primary_Asset','Realized_Amount_For_Primary_Asset_In_USD_Value','Base_Asset','Realized_Amount_For_Base_Asset','Realized_Amount_For_Base_Asset_In_USD_Value','Quote_Asset','Realized_Amount_For_Quote_Asset','Realized_Amount_For_Quote_Asset_In_USD_Value','Fee_Asset','Realized_Amount_For_Fee_Asset','Realized_Amount_For_Fee_Asset_In_USD_Value','Payment_Method','Withdrawal_Method','Additional_Note')
@@ -34,6 +34,10 @@ BLOCKFI_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 CELSIUS_HEADER = ('Internal id','Date and time','Transaction type','Coin type','Coin amount','USD Value','Original Reward Coin','Reward Amount In Original Coin','Confirmed')
 CELSIUS_DATETIME_FORMAT = "%B %d, %Y %I:%M %p"
 
+COINBASE_HEADER = ('Timestamp','Transaction Type','Asset','Quantity Transacted','Spot Price Currency','Spot Price at Transaction','Subtotal','Total (inclusive of fees and/or spread)','Fees and/or Spread','Notes')
+COINBASE_DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+COINBASE_CONVERTED_US = re.compile(r'Converted (\d+\.\d+) (\w+) to (\d+\.\d+) (\w+)')
+
 TS_NONTRADE_HEADER = ('Account','Date','Time','Type','Asset','Amount','Unit','Details','TransactionID','Notes')
 TS_TRADE_HEADER = ('Account','Date','Time','BoughtSold','Quantity','Symbol','ExecutionPrice','ExecutionUnit','Amount','Unit','Fee','FeeUnit','TransactionID','Notes')
 TS_NONTRADE_DEFAULT_TIME_STR = "11:00:00 AM"
@@ -43,6 +47,7 @@ IDENTIFY_MAP = {
     BINANCE_US_HEADER: (TxSource.BINANCE_US, TxType.COMMON),
     BLOCKFI_HEADER: (TxSource.BLOCKFI, TxType.COMMON),
     CELSIUS_HEADER: (TxSource.CELSIUS, TxType.COMMON),
+    COINBASE_HEADER: (TxSource.COINBASE, TxType.COMMON),
     TS_NONTRADE_HEADER: (TxSource.TRADESTATION, TxType.NONTRADE),
     TS_TRADE_HEADER: (TxSource.TRADESTATION, TxType.TRADE)
 }
@@ -56,6 +61,7 @@ TZ_DEFAULT_MAP = {
 ACCOINTING_HEADER_ROW = ['transactionType','date','inBuyAmount','inBuyAsset','outSellAmount','outSellAsset','feeAmount (optional)','feeAsset (optional)','classification (optional)','operationId (optional)','comments (optional)']
 ACCOINTING_DATETIME_FORMAT = "%m/%d/%Y %H:%M:%S"
 
+REGION = None
 CLASSIFY_MAP = {}
 PAIR_MAP = {}
 INPUT_TZ = None   # `None` implies pass-through (no conversion).
@@ -284,6 +290,92 @@ def celsius_row_mapper(tx):
     return [transactionType, txDate, inBuyAmount, inBuyAsset, outSellAmount, outSellAsset, feeAmount, feeAsset, classification, operationId, comments]
 
 
+# ---- Coinbase ----
+
+coinbase_dt_parser = etl.util.parsers.datetimeparser(COINBASE_DATETIME_FORMAT)
+
+def coinbase_dt_xform(dateTimeStr) -> str:
+
+    if (INPUT_TZ == None):
+        return coinbase_dt_parser(dateTimeStr).strftime(ACCOINTING_DATETIME_FORMAT) 
+
+    loc_dt = coinbase_dt_parser(dateTimeStr)
+    INPUT_TZ.localize(loc_dt, is_dst=True)
+    utc_dt = loc_dt.astimezone(pytz.utc)
+    return utc_dt.strftime(ACCOINTING_DATETIME_FORMAT)
+
+def coinbase_row_mapper(tx):
+
+    global REGION
+    if REGION != 'us':
+        raise Exception("The coinbase row mapper only supports Coinbase US data currently.")
+
+    strippedNotes = re.sub('[$,"]', '', tx['Notes'])  # This function assumes US Coinbase CSV format.
+
+    coinbaseDepositTypes = {'Learning Reward', 'Receive', 'Rewards Income'}
+    coinbaseWithdrawalTypes = {'Send'}
+    coinbaseOrderTypes = {'Buy', 'Convert', 'Sell'}
+
+    txIsDeposit = tx['Transaction Type'] in coinbaseDepositTypes
+    txIsWithdrawal = tx['Transaction Type'] in coinbaseWithdrawalTypes
+    txIsOrder = tx['Transaction Type'] in coinbaseOrderTypes
+    txHasFee = len(tx['Fees and/or Spread']) > 0
+
+    if not (txIsDeposit or txIsWithdrawal or txIsOrder):
+        raise Exception("Unhandled Coinbase 'Transaction Type': {}".format(tx))
+
+    if txIsDeposit:
+        transactionType = "deposit"
+        inBuyAmount = tx['Quantity Transacted']
+        inBuyAsset = tx['Asset']
+        outSellAmount = None
+        outSellAsset = None
+        classification = "income" if tx['Transaction Type'] != "Receive" else ( "income" if tx['Notes'].endswith("from Coinbase Referral") else None )
+
+    if txIsWithdrawal:
+        transactionType = "withdraw"
+        inBuyAmount = None
+        inBuyAsset = None
+        outSellAmount = tx['Quantity Transacted']
+        outSellAsset = tx['Asset']
+        classification = None
+
+    if txIsOrder:
+        transactionType = "order"
+        classification = None
+
+        if tx['Transaction Type'] == "Buy":
+            inBuyAmount = tx['Quantity Transacted']
+            inBuyAsset = tx['Asset']
+            outSellAmount = tx['Subtotal']
+            outSellAsset = tx['Spot Price Currency']
+
+        if tx['Transaction Type'] == "Sell":
+            inBuyAmount = tx['Subtotal']
+            inBuyAsset = tx['Spot Price Currency']
+            outSellAmount = tx['Quantity Transacted']
+            outSellAsset = tx['Asset']
+
+        if tx['Transaction Type'] == "Convert":
+            match = COINBASE_CONVERTED_US.match(strippedNotes)
+            if not match or len(match.groups()) != 4:
+                raise Exception("Could not parse conversion details from Coinbase 'Notes' field: {}".format(tx))
+
+            inBuyAmount = match[3]
+            inBuyAsset = match[4]
+            outSellAmount = match[1]
+            outSellAsset = match[2]
+  
+    txDate = coinbase_dt_xform(tx['Timestamp'])
+    feeAmount = tx['Fees and/or Spread'] if txHasFee else None
+    feeAsset = tx['Spot Price Currency'] if txHasFee else None
+    # Note: classification is set above.
+    operationId = None # Coinbase does not provide a transaction id or operation id.
+    comments = tx['Notes']
+
+    return [transactionType, txDate, inBuyAmount, inBuyAsset, outSellAmount, outSellAsset, feeAmount, feeAsset, classification, operationId, comments]
+
+
 # ---- TradeStation ----
 
 ts_dt_parser = etl.util.parsers.datetimeparser(TS_DATETIME_FORMAT)
@@ -359,6 +451,7 @@ ROWMAPPER_MAP = {
     (TxSource.BINANCE_US, TxType.COMMON): binance_us_row_mapper,
     (TxSource.BLOCKFI, TxType.COMMON): blockfi_row_mapper,
     (TxSource.CELSIUS, TxType.COMMON): celsius_row_mapper,
+    (TxSource.COINBASE, TxType.COMMON): coinbase_row_mapper,
     (TxSource.TRADESTATION, TxType.NONTRADE): ts_nontrade_rowmapper,
     (TxSource.TRADESTATION, TxType.TRADE): ts_trade_rowmapper
 }
@@ -417,12 +510,16 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    global CLASSIFY_MAP
+    global REGION
     if (args.region):
-        CLASSIFY_MAP = get_classify_map( args.region.lower() )
+        REGION = args.region.lower()
+        sys.stderr.write("Using supplied region: '{}'\n".format(REGION))
     else:
-        sys.stderr.write("Using default region of 'us' for transaction classifications.\n")
-        CLASSIFY_MAP = get_classify_map("us")
+        REGION = "us"
+        sys.stderr.write("Using default region: '{}'\n".format(REGION))
+
+    global CLASSIFY_MAP
+    CLASSIFY_MAP = get_classify_map(REGION)
 
     global PAIR_MAP
     PAIR_MAP = get_pair_map()
