@@ -97,6 +97,7 @@ information:
 * [Binance.US](BinanceUS.md)
 * [BlockFi](BlockFi.md)
 * [Celsius](Celsius.md)
+* [Coinbase](Coinbase.md) **NOTE:** Support for Coinbase is experimental!
 * [TradeStation](TradeStation.md)
 
 
