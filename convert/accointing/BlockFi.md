@@ -9,6 +9,18 @@ the loan feature of BlockFi, so I have no idea about how loan-related transactio
 from BlockFi.  As a result, you may have transactions that the `to-accointing.py` script does not handle. As always, I
 strongly recommend thoroughly checking any conversion result.
 
+**NOTE:** IMPORTANT:  When a trade is done in BlockFi, the CSV exported from BlockFi will contain two lines for the
+trade:  One line for the "In" asset (with a positive 'Amount') and another line for the "Out" asset (with a negative
+'Amount').  *Both lines will have the same 'Confirmed At' time.*  The `to-accointing.py` script currently does not
+consolidate these two lines into one line *as required by the Accointing template format*, so *after the conversion to
+the Accounting format*, the two lines of the trade *must be manually combined into one line* before importing the
+converted CSV into Accointing.
+
+**NOTE:** A similar situation to the trade case above occurs with withdrawal fees, such that the withdrawal fee is
+recorded on a separate line from the withdrawal that incurred the fee.  *Both lines will have the same 'Confirmed At'
+time.* However, the consolidation of the two lines into one line is optional, since the withdrawal fee transaction will
+still be recorded as a fee.  (However, it is more accurate to combine the lines into one line.)
+
 The CSV downloaded from the BlockFi website (typically named `trade_report_all.csv`) includes transfers between the
 BlockFi interest account and custody account, which are designated as "BIA Deposit" and "BIA Withdraw".  The default
 behavior of the `to-accointing.py` script is to classify these internal transfers as "ignored".  However, this means
