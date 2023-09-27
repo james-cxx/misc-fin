@@ -13,13 +13,16 @@
                 "BIA Deposit": "ignored",
                 "BIA Withdraw": "ignored",
                 "Interest Payment": "staking",
-                "Referral Bonus": "bounty"
+                "Referral Bonus": "bounty",
+                "Withdrawal Fee": "fee"
             }
         },
         "TxSource.CELSIUS": {
             "Transaction type": {
-                "Reward": "staking",
-                "Referred Award": "bounty"
+                "Promo Code Reward": "bounty",
+                "Referred Award": "bounty",
+                "Referrer Award": "bounty",
+                "Reward": "staking"
             }
         },
         "TxSource.TRADESTATION": {

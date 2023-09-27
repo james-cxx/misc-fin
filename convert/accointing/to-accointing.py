@@ -231,20 +231,27 @@ def blockfi_dt_xform(dateTimeStr) -> str:
 
 def blockfi_row_mapper(tx):
 
-    blockFiDepositTypes = {'BIA Deposit', 'Crypto Transfer', 'Interest Payment', 'Referral Bonus'}
+    blockFiDepositTypes = {'BIA Deposit', 'Bonus Payment', 'Cc Rewards Redemption', 'Crypto Transfer', 'Interest Payment', 'Referral Bonus'}
     blockFiWithdrawalTypes = {'BIA Withdraw', 'Withdrawal'}
+    blockFiTradeTypes = {'Trade'}
+    blockFiFeeTypes = {'Withdrawal Fee'}
 
     txIsDeposit =  tx['Transaction Type'] in blockFiDepositTypes
     txIsWithdrawal = tx['Transaction Type'] in blockFiWithdrawalTypes
+    txIsTrade = tx['Transaction Type'] in blockFiTradeTypes
+    txIsFee = tx['Transaction Type'] in blockFiFeeTypes
 
-    transactionType = "deposit" if txIsDeposit else ( "withdraw" if txIsWithdrawal else "???" )
+    txIsInbound = ( txIsDeposit or (txIsTrade and not tx['Amount'].startswith('-')) )
+    txIsOutbound = ( txIsWithdrawal or (txIsTrade and tx['Amount'].startswith('-')) )
+
+    transactionType = "deposit" if txIsDeposit else ( "withdraw" if (txIsWithdrawal or txIsFee) else ( "order" if txIsTrade else "???") )
     txDate = blockfi_dt_xform(tx['Confirmed At'])
-    inBuyAmount = tx['Amount'] if txIsDeposit else None
-    inBuyAsset = tx['Cryptocurrency'] if txIsDeposit else None
-    outSellAmount = tx['Amount'].lstrip('-') if txIsWithdrawal else None
-    outSellAsset = tx['Cryptocurrency'] if txIsWithdrawal else None
-    feeAmount = None
-    feeAsset = None
+    inBuyAmount = tx['Amount'] if txIsInbound else None
+    inBuyAsset = tx['Cryptocurrency'] if txIsInbound else None
+    outSellAmount = tx['Amount'].lstrip('-') if txIsOutbound else None
+    outSellAsset = tx['Cryptocurrency'] if txIsOutbound else None
+    feeAmount =  tx['Amount'].lstrip('-') if txIsFee else None
+    feeAsset = tx['Cryptocurrency'] if txIsFee else None
     classification = classify_tx(TxSource.BLOCKFI, 'Transaction Type', tx)
     operationId = None
     comments = tx['Transaction Type']
@@ -269,7 +276,7 @@ def celsius_dt_xform(dateTimeStr) -> str:
 
 def celsius_row_mapper(tx):
 
-    celsiusDepositTypes = {'Referred Award', 'Reward', 'Transfer'}
+    celsiusDepositTypes = {'Promo Code Reward', 'Referred Award', 'Referrer Award', 'Reward', 'Transfer'}
     celsiusWithdrawalTypes = {'Withdrawal'}
 
     txIsDeposit = ( tx['Transaction type'] in celsiusDepositTypes ) or ( tx['Transaction type'] == "" and float(tx['Coin amount']) >= 0 )
@@ -285,7 +292,7 @@ def celsius_row_mapper(tx):
     feeAsset = None
     classification = classify_tx(TxSource.CELSIUS, 'Transaction type', tx)
     operationId = tx['Internal id']
-    comments = None
+    comments = tx['Transaction type']
 
     return [transactionType, txDate, inBuyAmount, inBuyAsset, outSellAmount, outSellAsset, feeAmount, feeAsset, classification, operationId, comments]
 
